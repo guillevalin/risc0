@@ -16,7 +16,7 @@ members = [
   "ecdsa/k256",
   "ecdsa/p256",
   "groth16-verifier",
-  # "hello-world", # Excluded - uses its own workspace for TDX integration
+  "hello-world",
   "json",
   "json/core",
   "jwt-validator",
@@ -40,9 +40,9 @@ members = [
   "xgboost",
 ]
 
-# Exclude hello-world as it uses its own workspace for standalone TDX builds
+# Exclude hello-world-tee as it uses its own workspace for standalone TDX builds
 exclude = [
-  "hello-world",
+  "hello-world-tee",
 ]
 
 # Always optimize; otherwise tests take excessively long.

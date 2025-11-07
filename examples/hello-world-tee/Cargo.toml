@@ -1,7 +1,10 @@
 [package]
-name = "hello-world"
+name = "hello-world-tee"
 version = "0.1.0"
 edition = "2021"
+
+# Exclude from parent workspace to allow standalone TDX builds
+[workspace]
 
 [dependencies]
 hello-world-methods = { path = "methods" }
