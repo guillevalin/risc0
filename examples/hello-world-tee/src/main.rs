@@ -17,6 +17,29 @@ use hello_world_methods::MULTIPLY_ID;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Write;
+use std::path::Path;
+
+/// Check if running inside Intel TDX TEE
+fn is_inside_tdx_tee() -> bool {
+    Path::new("/dev/tdx_guest").exists()
+}
+
+/// Get TDX-specific information from the guest environment
+fn get_tdx_info() -> Option<String> {
+    // Read TDX CPU capabilities if available
+    if let Ok(cpuinfo) = fs::read_to_string("/proc/cpuinfo") {
+        if cpuinfo.contains("tdx_guest") {
+            return Some("TDX guest feature detected in CPU".to_string());
+        }
+    }
+    
+    // Check for TDX device
+    if Path::new("/dev/tdx_guest").exists() {
+        return Some("TDX guest device present".to_string());
+    }
+    
+    None
+}
 
 fn main() {
     tracing_subscriber::fmt()
@@ -25,6 +48,29 @@ fn main() {
 
     println!("🚀 RISC Zero + Intel TDX Integration");
     println!("=====================================\n");
+
+    // ═══════════════════════════════════════════════════════════
+    // CRITICAL: Enforce TDX TEE Environment
+    // ═══════════════════════════════════════════════════════════
+    // This code will ONLY run inside an Intel TDX Trust Domain.
+    // If not in TDX, the program exits immediately.
+    
+    println!("🔍 Checking TDX TEE environment...");
+    
+    if !is_inside_tdx_tee() {
+        eprintln!("\n❌ SECURITY VIOLATION: Not running inside Intel TDX TEE!");
+        eprintln!("This program MUST run inside a TDX Trust Domain.");
+        eprintln!("TDX device not found at /dev/tdx_guest");
+        eprintln!("\nTo run this example:");
+        eprintln!("  1. Use a TDX-enabled machine (e.g., Google Cloud C3 instances)");
+        eprintln!("  2. Ensure TDX is enabled in BIOS/firmware");
+        eprintln!("  3. Boot into a TDX-capable VM/TD");
+        std::process::exit(1);
+    }
+    
+    let tdx_info = get_tdx_info().unwrap_or_else(|| "TDX detected".to_string());
+    println!("✓ TDX TEE verified: {}", tdx_info);
+    println!();
 
     // Pick two numbers
     let (receipt, result) = multiply(17, 23);
@@ -35,9 +81,9 @@ fn main() {
     // CRITICAL: Verify receipt INSIDE THE TEE
     // ═══════════════════════════════════════════════════════════
     // This verification happens inside the Intel TDX Trust Domain.
+    // The program already checked that /dev/tdx_guest exists.
     // The verification result will be included in the TDX attestation
-    // to prove that the receipt was not only generated in the TEE,
-    // but also verified to be correct within the TEE.
+    // to prove that the receipt was verified within the TEE.
     
     println!("🔐 Verifying RISC Zero receipt inside TDX TEE...");
     
@@ -74,13 +120,19 @@ fn main() {
         "example": "hello-world-tee",
         "status": "success",
         "result": result,
+        "tee_environment": {
+            "tee_type": "Intel TDX",
+            "tee_verified": true,
+            "tee_device": "/dev/tdx_guest",
+            "tee_info": tdx_info
+        },
         "verification": {
             "verified_in_tee": true,
             "verification_passed": true,
             "verification_time_ms": verification_duration.as_millis(),
             "image_id": format!("{:?}", MULTIPLY_ID)
         },
-        "note": "Receipt generated AND verified inside Intel TDX TEE"
+        "note": "Receipt generated AND verified inside Intel TDX TEE - program enforces TDX environment"
     });
 
     let receipt_json_path = format!("{}/risc0-receipt.json", output_dir);
@@ -110,9 +162,19 @@ fn main() {
         .expect("Failed to create hash file");
     writeln!(hash_file, "Receipt SHA-256: {}", hex::encode(&receipt_hash))
         .expect("Failed to write hash");
+    writeln!(hash_file, "\n=== TEE Environment ===")
+        .expect("Failed to write");
+    writeln!(hash_file, "TEE Type: Intel TDX")
+        .expect("Failed to write");
+    writeln!(hash_file, "TEE Device: /dev/tdx_guest")
+        .expect("Failed to write");
+    writeln!(hash_file, "TEE Status: {}", tdx_info)
+        .expect("Failed to write");
+    writeln!(hash_file, "Enforcement: Program ONLY runs in TDX (exits otherwise)")
+        .expect("Failed to write");
     writeln!(hash_file, "\n=== Verification Certificate ===")
         .expect("Failed to write");
-    writeln!(hash_file, "Verified in TEE: YES")
+    writeln!(hash_file, "Verified in TEE: YES (enforced)")
         .expect("Failed to write");
     writeln!(hash_file, "Verification Status: PASSED")
         .expect("Failed to write");
