@@ -274,56 +274,122 @@ EOF
 
 # Generate TDX quote
 generate_tdx_quote() {
-    log_info "Generating TDX attestation quote..."
+    log_info "Generating TDX attestation quote with RISC Zero receipt binding..."
     
-    # TDX quote generation requires communication with the TDX Quote Generation Service (QGS)
-    # This is typically done through the DCAP library
-    
-    # Check if attestation service is available
-    if [ ! -S /var/run/tdx-attest.sock ] && [ ! -S /run/confidential-containers/attestation/teeproto.sock ]; then
-        log_warn "TDX attestation socket not found. Attempting to use tdx-attest tool..."
-        
-        # Try using configfs-tsm interface (newer kernel approach)
-        if [ -d /sys/kernel/config/tsm/report ]; then
-            log_info "Using configfs-tsm interface for attestation..."
-            
-            # Generate report via configfs
-            local report_dir="/sys/kernel/config/tsm/report/report0"
-            sudo mkdir -p "${report_dir}" 2>/dev/null || true
-            
-            # Write report data
-            echo "RISC0-HelloWorld-TDX" | sudo tee "${report_dir}/inblob" > /dev/null
-            
-            # Read the quote
-            sudo cat "${report_dir}/outblob" > "${QUOTE_FILE}" 2>/dev/null || {
-                log_error "Failed to generate quote via configfs-tsm"
-                return 1
-            }
-            
-            # Cleanup
-            sudo rmdir "${report_dir}" 2>/dev/null || true
-        else
-            log_warn "No TDX attestation mechanism found"
-            log_warn "Quote generation skipped. Install Intel SGX DCAP libraries or use a TDX-enabled system"
-            return 1
-        fi
-    else
-        # Use attestation socket
-        log_info "Using TDX attestation service..."
-        
-        # This would typically use a tool like tdx-attest or gramine-ratls
-        # For demonstration, we'll create a placeholder
-        log_warn "Attestation service integration not fully implemented"
-        echo "TDX Quote Placeholder - Use Intel DCAP libraries for production" > "${QUOTE_FILE}"
-    fi
-    
-    if [ -f "${QUOTE_FILE}" ] && [ -s "${QUOTE_FILE}" ]; then
-        log_info "✓ TDX quote generated: ${QUOTE_FILE}"
-        log_info "  Quote size: $(stat -f%z "${QUOTE_FILE}" 2>/dev/null || stat -c%s "${QUOTE_FILE}") bytes"
-    else
-        log_warn "Quote file not generated or empty"
+    # Read the receipt hash (same as used for report)
+    local receipt_hash_file="${OUTPUT_DIR}/receipt-hash.txt"
+    if [ ! -f "${receipt_hash_file}" ]; then
+        log_error "Receipt hash file not found: ${receipt_hash_file}"
         return 1
     fi
+    
+    # Extract the hash
+    local receipt_hash=$(grep "Receipt SHA-256:" "${receipt_hash_file}" | cut -d' ' -f3)
+    
+    if [ -z "${receipt_hash}" ]; then
+        log_error "Could not extract receipt hash"
+        return 1
+    fi
+    
+    # Try configfs-tsm interface for quote generation
+    if [ -d /sys/kernel/config/tsm/report ]; then
+        log_info "Using configfs-tsm interface for quote generation..."
+        
+        # Create unique report directory
+        local report_dir="/sys/kernel/config/tsm/report/risc0_quote_$$"
+        sudo mkdir -p "${report_dir}" 2>/dev/null || {
+            log_error "Failed to create configfs-tsm report directory"
+            return 1
+        }
+        
+        # Prepare REPORTDATA (same 64-byte format as report)
+        local timestamp=$(date +%s)
+        local reportdata_hex="${receipt_hash}$(printf '524953433045%014x%038x' ${timestamp} 0)"
+        
+        log_info "Binding quote to receipt hash: ${receipt_hash:0:32}..."
+        
+        # Set privilege level to request quote (not just report)
+        # Level 1 = Quote with full attestation
+        echo 1 | sudo tee "${report_dir}/privlevel" > /dev/null 2>&1 || true
+        
+        # Write REPORTDATA to inblob
+        if echo -n "${reportdata_hex}" | xxd -r -p | sudo tee "${report_dir}/inblob" > /dev/null 2>&1; then
+            # Small delay to allow quote generation
+            sleep 1
+            
+            # Try to read the quote
+            if [ -f "${report_dir}/outblob" ]; then
+                sudo cat "${report_dir}/outblob" > "${QUOTE_FILE}" 2>/dev/null
+                local quote_size=$(stat -c%s "${QUOTE_FILE}" 2>/dev/null || stat -f%z "${QUOTE_FILE}" 2>/dev/null || echo "0")
+                
+                if [ "$quote_size" -gt 0 ]; then
+                    log_info "✓ TDX quote generated via configfs-tsm: ${QUOTE_FILE}"
+                    log_info "  Quote size: ${quote_size} bytes"
+                    log_info "  Quote is cryptographically signed by Intel"
+                    log_info "  REPORTDATA contains receipt hash: ${receipt_hash:0:32}..."
+                    sudo rmdir "${report_dir}" 2>/dev/null || true
+                    return 0
+                fi
+            fi
+        fi
+        
+        # Cleanup on failure
+        sudo rmdir "${report_dir}" 2>/dev/null || true
+    fi
+    
+    # Check for attestation service as fallback
+    if [ -S /var/run/tdx-attest.sock ] || [ -S /run/confidential-containers/attestation/teeproto.sock ]; then
+        log_info "Trying TDX attestation service..."
+        # This would require specific attestation service client tools
+        log_warn "Attestation service detected but client integration not implemented"
+    fi
+    
+    # Try tdx-attest command-line tool if available
+    if command -v tdx-attest >/dev/null 2>&1; then
+        log_info "Trying tdx-attest command-line tool..."
+        
+        # Create temporary file with receipt hash
+        local temp_reportdata="${OUTPUT_DIR}/reportdata.bin"
+        echo -n "${reportdata_hex}" | xxd -r -p > "${temp_reportdata}"
+        
+        # Try to generate quote using tdx-attest
+        if tdx-attest -r "${temp_reportdata}" -o "${QUOTE_FILE}" 2>>"${LOG_FILE}"; then
+            local quote_size=$(stat -c%s "${QUOTE_FILE}" 2>/dev/null || stat -f%z "${QUOTE_FILE}" 2>/dev/null || echo "0")
+            if [ "$quote_size" -gt 0 ]; then
+                log_info "✓ TDX quote generated via tdx-attest: ${QUOTE_FILE}"
+                log_info "  Quote size: ${quote_size} bytes"
+                rm -f "${temp_reportdata}"
+                return 0
+            fi
+        fi
+        
+        rm -f "${temp_reportdata}"
+    fi
+    
+    log_warn "Quote generation failed"
+    log_info ""
+    log_info "TDX Quote generation requires additional setup:"
+    log_info ""
+    log_info "Method 1: Install Intel TDX Guest Tools"
+    log_info "  sudo apt-get update"
+    log_info "  sudo apt-get install -y libtdx-attest libtdx-attest-dev"
+    log_info ""
+    log_info "Method 2: Enable Quote Generation Service (QGS)"
+    log_info "  # Install Intel DCAP libraries"
+    log_info "  sudo apt-get install -y libsgx-dcap-quote-verify libsgx-dcap-default-qpl"
+    log_info "  # Start QGS daemon (if available)"
+    log_info "  sudo systemctl enable --now qgsd"
+    log_info ""
+    log_info "Method 3: Check kernel support"
+    log_info "  # Verify TSM report provider"
+    log_info "  cat /sys/kernel/config/tsm/report/provider 2>/dev/null"
+    log_info "  # Should show 'tdx_guest'"
+    log_info ""
+    log_info "Note: The TDX Report was generated successfully and contains"
+    log_info "      the receipt hash binding. The Quote is only needed for"
+    log_info "      remote attestation to third parties."
+    
+    return 1
 }
 
 # Run the RISC Zero example and capture receipt
