@@ -1,0 +1,7 @@
+[build]
+# Allow deprecated warnings from risc0-zkp generic-array usage
+rustflags = ["-A", "deprecated"]
+
+[target.'cfg(all())']
+rustflags = ["-A", "deprecated"]
+

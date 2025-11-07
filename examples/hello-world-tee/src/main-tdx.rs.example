@@ -1,0 +1,107 @@
+// Copyright 2025 RISC Zero, Inc.
+//
+// Example: Modified main.rs for TDX integration
+// This version exports the receipt for use with TDX attestation
+//
+// To use this file:
+//   1. Backup your current main.rs: cp src/main.rs src/main.rs.backup
+//   2. Copy this file: cp src/main-tdx.rs.example src/main.rs
+//   3. Run: cargo run --release --features prove
+
+use hello_world::multiply;
+use hello_world_methods::MULTIPLY_ID;
+use std::fs;
+use std::io::Write;
+
+fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
+    println!("🚀 RISC Zero + Intel TDX Integration");
+    println!("=====================================\n");
+
+    // Pick two numbers
+    let (receipt, result) = multiply(17, 23);
+
+    println!("✓ Computation complete: {} = 17 × 23", result);
+
+    // Verify receipt locally
+    receipt
+        .verify(MULTIPLY_ID)
+        .expect("Receipt verification failed");
+
+    println!("✓ Receipt verified locally\n");
+
+    // Create output directory
+    let output_dir = "tdx-output";
+    fs::create_dir_all(output_dir).expect("Failed to create output directory");
+
+    // Serialize receipt to JSON
+    let receipt_json = serde_json::to_string_pretty(&receipt)
+        .expect("Failed to serialize receipt");
+
+    let receipt_path = format!("{}/risc0-receipt.json", output_dir);
+    fs::write(&receipt_path, &receipt_json)
+        .expect("Failed to write receipt JSON");
+
+    println!("✓ Receipt saved to: {}", receipt_path);
+
+    // Serialize receipt to binary (more compact)
+    let receipt_binary = bincode::serialize(&receipt)
+        .expect("Failed to serialize receipt to binary");
+
+    let receipt_bin_path = format!("{}/risc0-receipt.bin", output_dir);
+    fs::write(&receipt_bin_path, &receipt_binary)
+        .expect("Failed to write receipt binary");
+
+    println!("✓ Receipt binary saved to: {}", receipt_bin_path);
+
+    // Calculate receipt hash for TDX binding
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(&receipt_binary);
+    let receipt_hash = hasher.finalize();
+
+    let hash_path = format!("{}/receipt-hash.txt", output_dir);
+    let mut hash_file = fs::File::create(&hash_path)
+        .expect("Failed to create hash file");
+    writeln!(hash_file, "Receipt SHA-256: {}", hex::encode(&receipt_hash))
+        .expect("Failed to write hash");
+    writeln!(
+        hash_file,
+        "\nThis hash can be included in TDX REPORTDATA to bind attestations"
+    )
+    .expect("Failed to write hash");
+
+    println!("✓ Receipt hash saved to: {}", hash_path);
+    println!("  Hash: {}", hex::encode(&receipt_hash));
+
+    // Create a summary
+    let summary_path = format!("{}/execution-summary.json", output_dir);
+    let summary = serde_json::json!({
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "example": "hello-world",
+        "input_a": 17,
+        "input_b": 23,
+        "output": result,
+        "receipt_hash": hex::encode(&receipt_hash),
+        "verification_status": "success",
+        "image_id": format!("{:?}", MULTIPLY_ID),
+    });
+
+    fs::write(
+        &summary_path,
+        serde_json::to_string_pretty(&summary).unwrap(),
+    )
+    .expect("Failed to write summary");
+
+    println!("✓ Execution summary saved to: {}", summary_path);
+
+    println!("\n🎉 All outputs generated successfully!");
+    println!("\nNext steps:");
+    println!("  1. Generate TDX attestation: Use the receipt hash in REPORTDATA");
+    println!("  2. Verify receipt: receipt.verify(MULTIPLY_ID)");
+    println!("  3. Verify TDX quote: Use Intel verification services");
+}
+

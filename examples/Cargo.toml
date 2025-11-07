@@ -40,6 +40,11 @@ members = [
   "xgboost",
 ]
 
+# Exclude hello-world-tee as it uses its own workspace for standalone TDX builds
+exclude = [
+  "hello-world-tee",
+]
+
 # Always optimize; otherwise tests take excessively long.
 [profile.dev]
 opt-level = 3

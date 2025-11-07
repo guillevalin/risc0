@@ -1,0 +1,29 @@
+[package]
+name = "verify-tdx"
+version = "0.1.0"
+edition = "2021"
+
+# Exclude from parent workspace
+[workspace]
+
+[dependencies]
+# TDX quote parsing and verification
+tdx-quote = { version = "0.0.4", features = ["pck"] }
+
+# CLI and utilities
+clap = { version = "4.5", features = ["derive"] }
+anyhow = "1.0"
+hex = "0.4"
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10"
+
+# Pretty output
+colored = "2.1"
+
+# Note: RISC Zero receipt verification can be added by running the hello-world
+# example directly, which already includes verification logic.
+
+[dev-dependencies]
+tempfile = "3.8"
+
