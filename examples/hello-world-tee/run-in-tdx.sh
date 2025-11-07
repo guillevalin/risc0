@@ -197,18 +197,19 @@ def get_tdx_report():
             print(f"REPORTDATA (first 32 bytes): {report_data[:32].hex()}", file=sys.stderr)
             print(f"REPORTDATA (last 32 bytes):  {report_data[32:].hex()}", file=sys.stderr)
             
-            # TDX report structure
+            # TDX report structure - use bytearray for mutable buffer
             # struct tdx_report_req {
             #     __u8 reportdata[64];
             #     __u8 tdreport[1024];
             # }
-            report_req = report_data + b'\x00' * 1024
+            report_req = bytearray(1088)  # 64 + 1024 bytes
+            report_req[:64] = report_data
             
-            # Make ioctl call
-            result = fcntl.ioctl(tdx_device.fileno(), TDX_CMD_GET_REPORT, report_req)
+            # Make ioctl call - modifies buffer in-place
+            fcntl.ioctl(tdx_device.fileno(), TDX_CMD_GET_REPORT, report_req)
             
             # Extract report (last 1024 bytes)
-            report = result[64:]
+            report = bytes(report_req[64:])
             
             # Write to stdout (will be redirected to file)
             sys.stdout.buffer.write(report)
