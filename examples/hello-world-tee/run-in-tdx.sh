@@ -145,11 +145,44 @@ generate_tdx_report() {
     log_info "Using RISC Zero receipt hash: ${receipt_hash}"
     log_info "This binds the TDX attestation to the specific RISC Zero proof"
     
-    # Generate report using TDX ioctl
-    # This requires a small C program or using a library that can make the ioctl call
-    # For this script, we'll use a Python helper
-    # Pass the output directory so Python can read the receipt hash
-    RECEIPT_HASH="${receipt_hash}" python3 << 'EOF' > "${REPORT_FILE}" 2>&1 | tee -a "${LOG_FILE}"
+    # Try configfs-tsm interface first (newer kernel method)
+    if [ -d /sys/kernel/config/tsm/report ]; then
+        log_info "Using configfs-tsm interface..."
+        
+        # Create report directory
+        local report_dir="/sys/kernel/config/tsm/report/risc0_report_$$"
+        sudo mkdir -p "${report_dir}" 2>/dev/null || true
+        
+        if [ -d "${report_dir}" ]; then
+            # Prepare 64-byte REPORTDATA (same format as ioctl method)
+            # First 32 bytes: receipt hash, Next 32 bytes: metadata
+            local timestamp=$(date +%s)
+            local reportdata_hex="${receipt_hash}$(printf '524953433045%014x%038x' ${timestamp} 0)"
+            
+            # Write REPORTDATA to inblob
+            if echo -n "${reportdata_hex}" | xxd -r -p | sudo tee "${report_dir}/inblob" > /dev/null 2>&1; then
+                # Check if report was generated
+                if [ -f "${report_dir}/outblob" ]; then
+                    sudo cat "${report_dir}/outblob" > "${REPORT_FILE}" 2>/dev/null && {
+                        log_info "✓ TDX report generated via configfs-tsm: ${REPORT_FILE}"
+                        log_info "  Report size: $(stat -c%s "${REPORT_FILE}" 2>/dev/null || stat -f%z "${REPORT_FILE}") bytes"
+                        sudo rmdir "${report_dir}" 2>/dev/null || true
+                        return 0
+                    }
+                fi
+            fi
+            
+            # Cleanup on failure
+            sudo rmdir "${report_dir}" 2>/dev/null || true
+            log_warn "configfs-tsm method failed, trying ioctl..."
+        fi
+    fi
+    
+    # Fallback to ioctl method
+    log_info "Trying ioctl method..."
+    
+    local temp_log="${OUTPUT_DIR}/tdx-report-gen.log"
+    if RECEIPT_HASH="${receipt_hash}" python3 << 'EOF' > "${REPORT_FILE}" 2>"${temp_log}"
 import struct
 import fcntl
 import sys
@@ -217,20 +250,24 @@ def get_tdx_report():
             print(f"✓ TDX report generated with receipt binding", file=sys.stderr)
             return 0
     except Exception as e:
-        print(f"Error generating TDX report: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
+        print(f"Error generating TDX report via ioctl: {e}", file=sys.stderr)
         return 1
 
 if __name__ == "__main__":
     sys.exit(get_tdx_report())
 EOF
-    
-    if [ $? -eq 0 ] && [ -f "${REPORT_FILE}" ] && [ -s "${REPORT_FILE}" ]; then
-        log_info "✓ TDX report generated: ${REPORT_FILE}"
-        log_info "  Report size: $(stat -f%z "${REPORT_FILE}" 2>/dev/null || stat -c%s "${REPORT_FILE}") bytes"
+    then
+        cat "${temp_log}" >> "${LOG_FILE}"
+        log_info "✓ TDX report generated via ioctl: ${REPORT_FILE}"
+        log_info "  Report size: $(stat -c%s "${REPORT_FILE}" 2>/dev/null || stat -f%z "${REPORT_FILE}") bytes"
+        rm -f "${temp_log}"
+        return 0
     else
-        log_error "Failed to generate TDX report"
+        cat "${temp_log}" >> "${LOG_FILE}"
+        log_error "Failed to generate TDX report via both configfs-tsm and ioctl methods"
+        log_error "Your kernel may not support TDX report generation"
+        cat "${temp_log}"
+        rm -f "${temp_log}"
         return 1
     fi
 }
