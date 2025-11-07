@@ -3,6 +3,9 @@ name = "hello-world"
 version = "0.1.0"
 edition = "2021"
 
+# Exclude from parent workspace to allow standalone builds
+[workspace]
+
 [dependencies]
 hello-world-methods = { path = "methods" }
 risc0-zkvm = { path = "../../risc0/zkvm" }
