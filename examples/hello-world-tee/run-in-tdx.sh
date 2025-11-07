@@ -113,6 +113,9 @@ build_example() {
     
     cd "${SCRIPT_DIR}"
     
+    # Allow deprecated warnings from risc0-zkp generic-array usage
+    export RUSTFLAGS="-A deprecated"
+    
     # Build with prove feature enabled
     cargo build --release --features prove 2>&1 | tee -a "${LOG_FILE}"
     
