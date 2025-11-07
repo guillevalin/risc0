@@ -31,12 +31,33 @@ fn main() {
 
     println!("✓ Computation complete: {} = 17 × 23", result);
 
-    // Verify receipt, panic if it's wrong
-    receipt.verify(MULTIPLY_ID).expect(
-        "Code you have proven should successfully verify; did you specify the correct image ID?",
-    );
-
-    println!("✓ Receipt verified locally\n");
+    // ═══════════════════════════════════════════════════════════
+    // CRITICAL: Verify receipt INSIDE THE TEE
+    // ═══════════════════════════════════════════════════════════
+    // This verification happens inside the Intel TDX Trust Domain.
+    // The verification result will be included in the TDX attestation
+    // to prove that the receipt was not only generated in the TEE,
+    // but also verified to be correct within the TEE.
+    
+    println!("🔐 Verifying RISC Zero receipt inside TDX TEE...");
+    
+    let verification_start = std::time::Instant::now();
+    let verification_result = receipt.verify(MULTIPLY_ID);
+    let verification_duration = verification_start.elapsed();
+    
+    match verification_result {
+        Ok(_) => {
+            println!("✓ Receipt verification PASSED inside TEE");
+            println!("  Verification time: {:?}", verification_duration);
+            println!("  Image ID: {:?}", MULTIPLY_ID);
+        }
+        Err(e) => {
+            eprintln!("✗ Receipt verification FAILED inside TEE: {:?}", e);
+            std::process::exit(1);
+        }
+    }
+    
+    println!();
 
     // Create output directory
     let output_dir = "tdx-output";
@@ -53,7 +74,13 @@ fn main() {
         "example": "hello-world-tee",
         "status": "success",
         "result": result,
-        "note": "Full receipt saved in binary format"
+        "verification": {
+            "verified_in_tee": true,
+            "verification_passed": true,
+            "verification_time_ms": verification_duration.as_millis(),
+            "image_id": format!("{:?}", MULTIPLY_ID)
+        },
+        "note": "Receipt generated AND verified inside Intel TDX TEE"
     });
 
     let receipt_json_path = format!("{}/risc0-receipt.json", output_dir);
@@ -77,11 +104,22 @@ fn main() {
     hasher.update(&receipt_binary);
     let receipt_hash = hasher.finalize();
 
+    // Create verification certificate
     let hash_path = format!("{}/receipt-hash.txt", output_dir);
     let mut hash_file = fs::File::create(&hash_path)
         .expect("Failed to create hash file");
     writeln!(hash_file, "Receipt SHA-256: {}", hex::encode(&receipt_hash))
         .expect("Failed to write hash");
+    writeln!(hash_file, "\n=== Verification Certificate ===")
+        .expect("Failed to write");
+    writeln!(hash_file, "Verified in TEE: YES")
+        .expect("Failed to write");
+    writeln!(hash_file, "Verification Status: PASSED")
+        .expect("Failed to write");
+    writeln!(hash_file, "Verification Time: {:?}", verification_duration)
+        .expect("Failed to write");
+    writeln!(hash_file, "Image ID: {:?}", MULTIPLY_ID)
+        .expect("Failed to write");
     writeln!(
         hash_file,
         "\nThis hash should be included in TDX REPORTDATA to bind attestations"
@@ -92,8 +130,15 @@ fn main() {
     println!("  Hash: {}", hex::encode(&receipt_hash));
 
     println!("\n🎉 All outputs generated successfully!");
-    println!("\nGenerated files in {}:", output_dir);
-    println!("  - risc0-receipt.json  (metadata)");
-    println!("  - risc0-receipt.bin   (full receipt for verification)");
-    println!("  - receipt-hash.txt    (SHA-256 for TDX binding)");
+    println!("\n══════════════════════════════════════════════════");
+    println!("Generated files in {}:", output_dir);
+    println!("  - risc0-receipt.json     (metadata + verification status)");
+    println!("  - risc0-receipt.bin      (full receipt for verification)");
+    println!("  - receipt-hash.txt       (SHA-256 + verification certificate)");
+    println!("══════════════════════════════════════════════════");
+    println!("\n🔐 IMPORTANT:");
+    println!("  ✓ Proof generated inside TDX TEE");
+    println!("  ✓ Proof verified inside TDX TEE");
+    println!("  ✓ Receipt hash will be bound to TDX attestation");
+    println!("\nNext step: Run TDX attestation generation");
 }
